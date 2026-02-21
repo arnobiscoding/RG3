@@ -123,8 +123,12 @@ driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
 wait = WebDriverWait(driver, 10)
 
 try:
-    phone_number = "1540046875"
-    password = "strongpassword1"
+    phone_number = os.getenv('PHONE_NUMBER')
+    password = os.getenv('PASSWORD')
+    if not phone_number or not password:
+        print("ERROR: PHONE_NUMBER and PASSWORD not found in environment variables. Add them to .env")
+        driver.quit()
+        exit(1)
     logging.info("Starting login process...")
     login_success = perform_login(driver, wait, phone_number, password)
     if not login_success:
