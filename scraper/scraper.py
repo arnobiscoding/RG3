@@ -80,7 +80,7 @@ def run_scraper_task():
 
     chrome_options = Options()
     # COMMENT OUT the next line if you want to see the browser window locally
-    chrome_options.add_argument("--headless=new") 
+    # chrome_options.add_argument("--headless=new") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")

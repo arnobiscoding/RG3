@@ -46,6 +46,10 @@ COLOR_MAP = {
     '5': 'green/violet', '6': 'red', '7': 'green', '8': 'red', '9': 'green'
 }
 
+def js_click(driver, element):
+    """Fallback click method for Heroku's headless mode"""
+    driver.execute_script("arguments[0].click();", element)
+
 def perform_login(driver, wait, phone_number, password, max_retries=3):
     retries = 0
     driver.get("https://hgnice.bet/#/login")
@@ -53,16 +57,16 @@ def perform_login(driver, wait, phone_number, password, max_retries=3):
     while retries < max_retries:
         try:
             logging.info(f"Attempting login (Attempt {retries + 1}/{max_retries})")
-            phone_field = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="app"]/div[2]/div[4]/div[1]/div/div[1]/div[2]/input')))
-            password_field = wait.until(EC.presence_of_element_located((By.XPATH, '//*[@id="app"]/div[2]/div[4]/div[1]/div/div[2]/div[2]/input')))
+            phone_field = wait.until(EC.presence_of_element_located((By.XPATH, "//input[contains(@placeholder, 'phone')]")))
+            password_field = driver.find_element(By.XPATH, "//input[@type='password']")
             
             phone_field.clear()
             phone_field.send_keys(phone_number)
             password_field.clear()
             password_field.send_keys(password)
             
-            login_button = wait.until(EC.element_to_be_clickable((By.XPATH, '//*[@id="app"]/div[2]/div[4]/div[1]/div/div[4]/button[1]')))
-            driver.execute_script("arguments[0].click();", login_button)
+            login_button = wait.until(EC.element_to_be_clickable((By.TAG_NAME, "button")))
+            js_click(driver, login_button)
             logging.info("Login successful")
             return True
         except Exception as e:
@@ -78,6 +82,7 @@ def run_scraper_task():
     GOOGLE_CHROME_BIN = os.environ.get('GOOGLE_CHROME_BIN')
     CHROMEDRIVER_PATH = os.environ.get('CHROMEDRIVER_PATH')
 
+    # Explicit None check for Heroku compatibility
     if not PHONE_NUMBER or not PASSWORD or wingo_collection is None:
         logging.critical("ERROR: Missing credentials or MongoDB connection.")
         return
@@ -97,78 +102,83 @@ def run_scraper_task():
 
     driver = None
     try:
-        logging.info("Initializing Heroku WebDriver...")
+        logging.info("Initializing WebDriver...")
         service = Service(executable_path=CHROMEDRIVER_PATH) if CHROMEDRIVER_PATH else Service()
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 20) # Increased timeout for Heroku
 
         if not perform_login(driver, wait, PHONE_NUMBER, PASSWORD):
             return
 
-        # Dismiss Popups
-        popup_xpaths = ["/html/body/div[1]/div[2]/div[11]/div[1]/div[3]", "/html/body/div[1]/div[6]/div[2]/div[2]"]
-        for xpath in popup_xpaths:
-            try:
-                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(1)
-            except: pass
+        # --- Popup Cleaning (Mandatory for Headless) ---
+        time.sleep(5)
+        driver.execute_script("""
+            var overlays = document.querySelectorAll('.van-overlay, .van-popup, .notice-box');
+            overlays.forEach(el => el.remove());
+        """)
 
         # Navigate to WinGo
-        nav_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[2]/div[5]/div[2]/div/div[1]")))
-        driver.execute_script("arguments[0].click();", nav_btn)
-        time.sleep(2)
+        nav_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Win Go') or contains(text(), 'WinGo')]")))
+        js_click(driver, nav_btn)
+        time.sleep(3)
 
-        # Timer Sync
+        # Wait for timer sync (00:00)
         time_xpath = '/html/body/div[1]/div[2]/div[2]/div[6]'
+        logging.info("Waiting for timer to hit 00:00...")
         while True:
             try:
-                time_str = ''.join([d.text for d in driver.find_elements(By.XPATH, time_xpath + '/div')])
+                time_divs = driver.find_elements(By.XPATH, time_xpath + '/div')
+                time_str = ''.join([d.text for d in time_divs])
                 if time_str == "00:00": break
             except: pass
             time.sleep(0.5)
         
-        logging.info("Timer hit 00:00. Waiting for table refresh...")
+        logging.info("Timer synced. Waiting 5s for table refresh...")
         time.sleep(5)
 
+        # Scraping Logic
         all_records = []
         for current_page in range(1, 16):
-            # Wait for data rows to be visible (Crucial for Heroku)
+            # Wait for rows to be VISIBLE, not just present
             try:
-                wait.until(EC.visibility_of_element_located((By.XPATH, '//div[contains(@class, "van-row")]//div[contains(@class, "numcenter")]')))
+                wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, ".van-row")))
             except:
-                logging.warning(f"Timeout on page {current_page}. Table didn't load.")
+                logging.warning(f"Rows not visible on page {current_page}. Skipping.")
                 break
 
-            rows = driver.find_elements(By.XPATH, '//div[contains(@class, "van-row") and .//div[contains(@class, "numcenter")]]')
+            rows = driver.find_elements(By.CSS_SELECTOR, ".van-row")
             for row in rows:
                 try:
-                    p = row.find_element(By.XPATH, './div[1]').text
-                    n = row.find_element(By.XPATH, './/div[contains(@class, "numcenter")]/div').text
-                    if p and n:
+                    data = row.text.split('\n')
+                    # Data validation: Ensure the first item looks like a Period ID
+                    if len(data) >= 2 and data[0].startswith("202"):
+                        p_id = data[0].strip()
+                        num = data[1].strip()
                         all_records.append({
-                            '_id': p,
-                            'period': p,
-                            'number': n,
-                            'color': COLOR_MAP.get(n, 'unknown'),
+                            '_id': p_id,
+                            'period': p_id,
+                            'number': num,
+                            'color': COLOR_MAP.get(num, 'unknown'),
                             'scraped_at': datetime.now(timezone.utc)
                         })
                 except: continue
 
             if current_page < 15:
                 try:
-                    next_btn = driver.find_element(By.XPATH, '//div[contains(@class, "record-foot-next")]')
-                    driver.execute_script("arguments[0].click();", next_btn)
+                    next_btn = driver.find_element(By.XPATH, "//div[contains(@class, 'next')] | //*[contains(text(), '>')]")
+                    js_click(driver, next_btn)
                     time.sleep(2)
                 except: break
 
-        # Upsert
+        # Upsert to MongoDB
         if all_records:
+            count = 0
             for record in all_records:
-                wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
-            logging.info(f"✅ Success. Processed {len(all_records)} periods.")
+                result = wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
+                if result.upserted_id or result.modified_count: count += 1
+            logging.info(f"✅ Task Finished. Processed {count} unique records.")
         else:
-            logging.error("❌ Processed 0 records. The table might be hidden.")
+            logging.error("❌ No records found during scrape.")
 
     except Exception as e:
         logging.error(f"❌ Scraper Task Failed: {e}")
