@@ -78,7 +78,6 @@ def run_scraper_task():
     GOOGLE_CHROME_BIN = os.environ.get('GOOGLE_CHROME_BIN')
     CHROMEDRIVER_PATH = os.environ.get('CHROMEDRIVER_PATH')
 
-    # CRITICAL: Use "is None" to avoid Heroku truthiness crash
     if not PHONE_NUMBER or not PASSWORD or wingo_collection is None:
         logging.critical("ERROR: Credentials or MongoDB collection unavailable.")
         return
@@ -96,72 +95,97 @@ def run_scraper_task():
     driver = None
     try:
         logging.info("Initializing WebDriver...")
-        # For Heroku, the Service must point to the CHROMEDRIVER_PATH
         service = Service(executable_path=CHROMEDRIVER_PATH) if CHROMEDRIVER_PATH else Service()
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
         })
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 20) # Increased timeout for Heroku latency
 
         if not perform_login(driver, wait, PHONE_NUMBER, PASSWORD):
             return
 
-        # Popup Handling
-        for _ in range(2): # Dismiss the recurring initial popups
+        # Improved Popup Handling using a loop
+        popup_xpath = "/html/body/div[1]/div[2]/div[11]/div[1]/div[3]"
+        for i in range(3):
             try:
-                wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[2]/div[11]/div[1]/div[3]"))).click()
+                btn = wait.until(EC.element_to_be_clickable((By.XPATH, popup_xpath)))
+                driver.execute_script("arguments[0].click();", btn) # JS Click is more reliable
+                logging.info(f"Dismissed popup {i+1}")
                 time.sleep(1)
-            except: pass
-
-        try:
-            wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[6]/div[2]/div[2]"))).click()
-        except: pass
+            except: break
 
         # Navigate to target
-        wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[2]/div[5]/div[2]/div/div[1]"))).click()
-        time.sleep(1)
+        target_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[2]/div[5]/div[2]/div/div[1]")))
+        driver.execute_script("arguments[0].click();", target_btn)
+        time.sleep(2)
 
         # Timer Sync
         time_xpath = '/html/body/div[1]/div[2]/div[2]/div[6]'
+        logging.info("Waiting for timer to sync...")
         while True:
-            time_str = ''.join([d.text for d in driver.find_elements(By.XPATH, time_xpath + '/div')])
-            if time_str == "00:00": break
+            try:
+                time_str = ''.join([d.text for d in driver.find_elements(By.XPATH, time_xpath + '/div')])
+                if time_str == "00:00": break
+            except: pass
             time.sleep(0.5)
-        time.sleep(2)
+        
+        logging.info("Timer hit 00:00. Waiting 5s for table to refresh...")
+        time.sleep(5) # Crucial: Wait for the site to process the result
 
         # Scrape Pages
         all_records = []
         for current_page in range(1, 16):
-            wait.until(EC.presence_of_element_located((By.XPATH, '/html/body/div[1]/div[2]/div[4]/div[2]/div/div[2]')))
-            rows = driver.find_elements(By.XPATH, '/html/body/div[1]/div[2]/div[4]/div[2]/div/div[2]/div[contains(@class, "van-row")]')
+            # 1. Wait until at least one data row is VISIBLE
+            try:
+                wait.until(EC.visibility_of_element_located((By.XPATH, '//div[contains(@class, "van-row")]//div[contains(@class, "numcenter")]')))
+            except:
+                logging.warning(f"Timeout waiting for rows on page {current_page}")
+                break
+
+            # 2. Get rows
+            rows = driver.find_elements(By.XPATH, '//div[contains(@class, "van-row") and .//div[contains(@class, "numcenter")]]')
+            
             for row in rows:
                 try:
+                    # Use relative XPaths for safety
                     p = row.find_element(By.XPATH, './div[1]').text
                     n = row.find_element(By.XPATH, './/div[contains(@class, "numcenter")]/div').text
                     bs = row.find_element(By.XPATH, './div[contains(@class, "van-col--5")][2]/span').text
-                    all_records.append({
-                        '_id': p,
-                        'period': p,
-                        'number': n,
-                        'big_small': bs,
-                        'color': COLOR_MAP.get(n, 'unknown'),
-                        'scraped_at': datetime.now(timezone.utc)
-                    })
+                    
+                    if p and n: # Ensure we didn't get empty strings
+                        all_records.append({
+                            '_id': p,
+                            'period': p,
+                            'number': n,
+                            'big_small': bs,
+                            'color': COLOR_MAP.get(n, 'unknown'),
+                            'scraped_at': datetime.now(timezone.utc)
+                        })
                 except: continue
             
+            # Navigate to next page
             if current_page < 15:
                 try:
-                    driver.find_element(By.XPATH, '//div[contains(@class, "record-foot-next")]').click()
-                    time.sleep(1.5)
-                except: break
+                    next_btn = driver.find_element(By.XPATH, '//div[contains(@class, "record-foot-next")]')
+                    driver.execute_script("arguments[0].click();", next_btn)
+                    time.sleep(2) # Wait for page transition
+                except: 
+                    logging.warning(f"Could not find next button on page {current_page}")
+                    break
 
         # Upsert
-        for record in all_records:
-            wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
-        
-        logging.info(f"✅ Scrape successful. Processed {len(all_records)} periods.")
+        if all_records:
+            success_count = 0
+            for record in all_records:
+                try:
+                    wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
+                    success_count += 1
+                except: pass
+            logging.info(f"✅ Scrape successful. Processed {success_count} unique periods.")
+        else:
+            logging.error("❌ Failed to find any records. Check site accessibility.")
 
     except Exception as e:
         logging.critical(f"❌ Scraper task failed: {e}")
