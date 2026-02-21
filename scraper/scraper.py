@@ -7,20 +7,18 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
-# Optional for local testing; Heroku will ignore this if the file isn't pushed
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+# Load local .env file
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- MongoDB Connection Pooling ---
+# --- MongoDB Connection Setup ---
 MONGO_URI = os.environ.get('MONGO_URI')
 mongo_client = None
 wingo_collection = None
@@ -34,12 +32,12 @@ if MONGO_URI:
             wingo_collection = db['Wingo_Dataset']
             logging.info("✅ Connected to MongoDB successfully.")
             break
-        except Exception as e:
-            logging.error(f"❌ MongoDB connection attempt {attempt} failed: {e}")
+        except ServerSelectionTimeoutError as e:
+            logging.error(f"❌ ERROR: Failed to connect to MongoDB. Attempt {attempt}")
             if attempt == 3: wingo_collection = None
             time.sleep(2)
 else:
-    logging.critical("❌ ERROR: MONGO_URI not found.")
+    logging.critical("❌ ERROR: MONGO_URI not found in .env file.")
 
 COLOR_MAP = {
     '0': 'red/violet', '1': 'green', '2': 'red', '3': 'green', '4': 'red',
@@ -75,55 +73,50 @@ def perform_login(driver, wait, phone_number, password, max_retries=3):
 def run_scraper_task():
     PHONE_NUMBER = os.environ.get('PHONE_NUMBER')
     PASSWORD = os.environ.get('PASSWORD')
-    GOOGLE_CHROME_BIN = os.environ.get('GOOGLE_CHROME_BIN')
-    CHROMEDRIVER_PATH = os.environ.get('CHROMEDRIVER_PATH')
 
-    # CRITICAL: Use "is None" to avoid Heroku truthiness crash
     if not PHONE_NUMBER or not PASSWORD or wingo_collection is None:
-        logging.critical("ERROR: Credentials or MongoDB collection unavailable.")
+        logging.critical("ERROR: Missing credentials or MongoDB connection.")
         return
 
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
+    # COMMENT OUT the next line if you want to see the browser window locally
+    chrome_options.add_argument("--headless=new") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    if GOOGLE_CHROME_BIN:
-        chrome_options.binary_location = GOOGLE_CHROME_BIN
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
 
     driver = None
     try:
-        logging.info("Initializing WebDriver...")
-        # For Heroku, the Service must point to the CHROMEDRIVER_PATH
-        service = Service(executable_path=CHROMEDRIVER_PATH) if CHROMEDRIVER_PATH else Service()
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
-        })
+        logging.info("Initializing local WebDriver...")
+        # Local setup uses ChromeDriverManager
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         wait = WebDriverWait(driver, 15)
 
         if not perform_login(driver, wait, PHONE_NUMBER, PASSWORD):
             return
 
-        # Popup Handling
-        for _ in range(2): # Dismiss the recurring initial popups
+        # --- Handle Popups Resiliently ---
+        popup_xpaths = [
+            "/html/body/div[1]/div[2]/div[11]/div[1]/div[3]",
+            "/html/body/div[1]/div[2]/div[11]/div[1]/div[3]",
+            "/html/body/div[1]/div[6]/div[2]/div[2]"
+        ]
+        for xpath in popup_xpaths:
             try:
-                wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[2]/div[11]/div[1]/div[3]"))).click()
+                btn = wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
+                btn.click()
                 time.sleep(1)
-            except: pass
+            except:
+                logging.info(f"Popup {xpath} not found/clickable, skipping.")
 
-        try:
-            wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[6]/div[2]/div[2]"))).click()
-        except: pass
-
-        # Navigate to target
+        # Navigate to WinGo
         wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div[2]/div[5]/div[2]/div/div[1]"))).click()
-        time.sleep(1)
+        time.sleep(2)
 
-        # Timer Sync
+        # Wait for timer sync
         time_xpath = '/html/body/div[1]/div[2]/div[2]/div[6]'
         while True:
             time_str = ''.join([d.text for d in driver.find_elements(By.XPATH, time_xpath + '/div')])
@@ -131,47 +124,52 @@ def run_scraper_task():
             time.sleep(0.5)
         time.sleep(2)
 
-        # Scrape Pages
+        # Scraping Logic
         all_records = []
         for current_page in range(1, 16):
             wait.until(EC.presence_of_element_located((By.XPATH, '/html/body/div[1]/div[2]/div[4]/div[2]/div/div[2]')))
             rows = driver.find_elements(By.XPATH, '/html/body/div[1]/div[2]/div[4]/div[2]/div/div[2]/div[contains(@class, "van-row")]')
+            
             for row in rows:
                 try:
                     p = row.find_element(By.XPATH, './div[1]').text
                     n = row.find_element(By.XPATH, './/div[contains(@class, "numcenter")]/div').text
-                    bs = row.find_element(By.XPATH, './div[contains(@class, "van-col--5")][2]/span').text
                     all_records.append({
-                        '_id': p,
+                        '_id': p, # Use period as unique ID
                         'period': p,
                         'number': n,
-                        'big_small': bs,
                         'color': COLOR_MAP.get(n, 'unknown'),
                         'scraped_at': datetime.now(timezone.utc)
                     })
                 except: continue
-            
-            if current_page < 15:
-                try:
-                    driver.find_element(By.XPATH, '//div[contains(@class, "record-foot-next")]').click()
-                    time.sleep(1.5)
-                except: break
 
-        # Upsert
+            if current_page < 15:
+                next_btn = driver.find_element(By.XPATH, '//div[contains(@class, "record-foot-next")]')
+                next_btn.click()
+                time.sleep(1.5)
+
+        # Upsert to MongoDB
+        count = 0
         for record in all_records:
-            wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
+            result = wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
+            if result.upserted_id: count += 1
         
-        logging.info(f"✅ Scrape successful. Processed {len(all_records)} periods.")
+        logging.info(f"✅ Task Finished. Added {count} new records.")
 
     except Exception as e:
-        logging.critical(f"❌ Scraper task failed: {e}")
+        logging.error(f"❌ Scraper Task Failed: {e}")
     finally:
         if driver:
-            driver.close()
             driver.quit()
 
 if __name__ == "__main__":
     while True:
-        run_scraper_task()
-        logging.info("💤 Sleeping for 30 minutes...")
+        # Check connection again in case it dropped
+        if wingo_collection is not None:
+            run_scraper_task()
+            logging.info("💤 Sleeping for 30 minutes...")
+        else:
+            logging.error("❌ MongoDB not connected. Retrying connection...")
+            # Attempt to reconnect logic could go here
+        
         time.sleep(1800)
