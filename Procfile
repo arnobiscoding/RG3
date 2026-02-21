@@ -1,0 +1,1 @@
+worker: python scraper/WinGo_scraper.py

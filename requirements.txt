@@ -1,0 +1,10 @@
+selenium
+pymongo
+python-dotenv
+webdriver-manager
+
+# Heroku-specific dependencies
+chromedriver-autoinstaller
+
+# Optional: logging is built-in, but for advanced logging
+# python-dotenv (if you want .env support, not used in final script)
