@@ -92,7 +92,7 @@ def run_scraper_task():
     GOOGLE_CHROME_BIN = os.environ.get('GOOGLE_CHROME_BIN')
     CHROMEDRIVER_PATH = os.environ.get('CHROMEDRIVER_PATH')
 
-    if not PHONE_NUMBER or not PASSWORD or not wingo_collection:
+    if not PHONE_NUMBER or not PASSWORD or wingo_collection is None:
         logging.critical("ERROR: PHONE_NUMBER, PASSWORD, or MongoDB collection not available.")
         return
 
