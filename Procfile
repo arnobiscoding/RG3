@@ -1,1 +1,1 @@
-worker: python scraper/WinGo_scraper.py
+worker: python scraper/debugbot.py
