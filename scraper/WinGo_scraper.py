@@ -7,7 +7,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import logging
-import json
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -18,7 +17,7 @@ import os
 from pymongo import MongoClient
 from pymongo.errors import ServerSelectionTimeoutError
 from datetime import datetime, timedelta
-
+from datetime import timezone
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load environment variables from .env file
@@ -97,6 +96,7 @@ def perform_login(driver, wait, phone_number, password, max_retries=3):
     return False
 
 chrome_options = Options()
+chrome_options.add_argument("--headless=new")
 chrome_options.add_argument("--disable-gpu")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
@@ -205,14 +205,11 @@ try:
                 time.sleep(0.2)
         current_page += 1
 
-    # Print all records oldest to newest
+    # Store all records oldest to newest
     all_records = all_records[::-1]
-    print("\nAll records (oldest to newest):")
-    for rec in all_records:
-        print(f"Period: {rec[0]}, Number: {rec[1]}, Big/Small: {rec[2]}, Color: {rec[3]}")
-
-    # Upload to MongoDB
-    dhaka_time = datetime.utcnow() + timedelta(hours=6)
+    # Use timezone-aware UTC datetime for run_id
+    from datetime import datetime, timezone, timedelta
+    dhaka_time = datetime.now(timezone.utc) + timedelta(hours=6)
     run_id = dhaka_time.strftime('%Y-%m-%d %H:%M:%S')
     record_data = [
         {
