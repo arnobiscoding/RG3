@@ -7,8 +7,47 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
 import logging
+import json
+import os
+from dotenv import load_dotenv
+from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
+from datetime import datetime, timedelta
+import json
+import os
+from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError
+from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Load environment variables from .env file
+load_dotenv()
+MONGO_URI = os.getenv('MONGO_URI')
+if not MONGO_URI:
+    print("ERROR: MONGO_URI not found in environment variables. Add it to .env")
+    exit(1)
+
+mongo_client = None
+for attempt in range(1, 4):
+    try:
+        mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+        mongo_client.admin.command('ping')
+        db = mongo_client['Restless_Gambler']
+        wingo_collection = db['Wingo_Dataset']
+        print("✅ Connected to MongoDB successfully.")
+        break
+    except ServerSelectionTimeoutError as e:
+        print(f"❌ ERROR: Failed to connect to MongoDB. Attempt {attempt}")
+        print(f"   Details: {e}")
+        if attempt == 3:
+            exit(1)
+        time.sleep(2)
+    except Exception as e:
+        print(f"❌ ERROR: MongoDB connection error: {e}")
+        if attempt == 3:
+            exit(1)
+        time.sleep(2)
 
 # Color mapping based on number
 COLOR_MAP = {
@@ -167,5 +206,26 @@ try:
     print("\nAll records (oldest to newest):")
     for rec in all_records:
         print(f"Period: {rec[0]}, Number: {rec[1]}, Big/Small: {rec[2]}, Color: {rec[3]}")
+
+    # Upload to MongoDB
+    dhaka_time = datetime.utcnow() + timedelta(hours=6)
+    run_id = dhaka_time.strftime('%Y-%m-%d %H:%M:%S')
+    record_data = [
+        {
+            'period': rec[0],
+            'number': rec[1],
+            'big_small': rec[2],
+            'color': rec[3]
+        } for rec in all_records
+    ]
+    doc = {
+        '_id': run_id,
+        'data': record_data
+    }
+    try:
+        wingo_collection.insert_one(doc)
+        print(f"✅ Uploaded run to MongoDB with _id: {run_id}")
+    except Exception as e:
+        print(f"❌ ERROR: Failed to upload to MongoDB: {e}")
 finally:
     driver.quit()
