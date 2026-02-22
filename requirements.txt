@@ -2,7 +2,7 @@ selenium
 pymongo
 python-dotenv
 webdriver-manager
-
+selenium-wire
 # Heroku-specific dependencies
 chromedriver-autoinstaller
 
