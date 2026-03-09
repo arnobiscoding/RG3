@@ -3,6 +3,7 @@ import os
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -16,7 +17,40 @@ from webdriver_manager.chrome import ChromeDriverManager
 # Load local .env file
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+def configure_logging():
+    log_dir = Path(__file__).resolve().parent / "output" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    today_name = f"scraper_{datetime.now().strftime('%Y-%m-%d')}.log"
+    log_file = log_dir / today_name
+
+    # Keep only today's log file.
+    for existing in log_dir.glob("scraper_*.log"):
+        if existing.name != today_name:
+            try:
+                existing.unlink()
+            except OSError:
+                pass
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+
+configure_logging()
 
 COLOR_MAP = {
     '0': 'red/violet', '1': 'green', '2': 'red', '3': 'green', '4': 'red',
@@ -233,4 +267,10 @@ def run_scraper_task():
 
 
 if __name__ == "__main__":
-    run_scraper_task()
+    logging.info("=" * 72)
+    logging.info("Run started")
+    try:
+        run_scraper_task()
+    finally:
+        logging.info("Run finished")
+        logging.info("=" * 72)
