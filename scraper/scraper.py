@@ -199,7 +199,7 @@ def wait_for_clock_and_read_rows(driver, wait, total_pages=15):
                     'period': period,
                     'number': number,
                     'color': COLOR_MAP.get(number, 'unknown'),
-                    'scraped_at': datetime.now(UTC_PLUS_6)
+                    'scraped_at': datetime.now(UTC_PLUS_6).isoformat(timespec='milliseconds')
                 })
             except Exception:
                 continue
