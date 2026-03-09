@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
 ## Environment Variables
 
-Create a `.env` file (inside `scraper/` for current script behavior) with:
+Create a `.env` file in the project root (`RG3/.env`) with:
 
 ```env
 PHONE_NUMBER=your_phone_number
@@ -60,6 +60,8 @@ MONGO_URI=your_mongodb_connection_string
 ```
 
 `MONGO_URI` is required for `scraper.py` and optional for `scraper_txt.py`.
+
+Never commit real secrets. Keep only placeholder values in `.env.example`.
 
 ## Run the Scrapers
 

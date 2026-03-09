@@ -1,0 +1,27 @@
+#!/bin/sh
+# Block commits that contain common secret/token patterns.
+
+PATTERN='([0-9]{8,12}:[A-Za-z0-9_-]{20,}|TELEGRAM_BOT_TOKEN\s*=\s*[^[:space:]]+|BOT_TOKEN\s*=\s*[^[:space:]]+|api\.telegram\.org/bot)'
+
+# Scan only staged added/modified files.
+FILES=$(git diff --cached --name-only --diff-filter=AM)
+
+[ -z "$FILES" ] && exit 0
+
+HIT=0
+for FILE in $FILES; do
+  if [ -f "$FILE" ]; then
+    if git show ":$FILE" | grep -E -n "$PATTERN" >/dev/null 2>&1; then
+      echo "[pre-commit] Possible secret detected in staged file: $FILE"
+      git show ":$FILE" | grep -E -n "$PATTERN"
+      HIT=1
+    fi
+  fi
+done
+
+if [ "$HIT" -ne 0 ]; then
+  echo "[pre-commit] Commit blocked. Move secrets to .env and use placeholders in tracked files."
+  exit 1
+fi
+
+exit 0
