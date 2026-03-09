@@ -5,8 +5,6 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
-from pymongo import MongoClient
-from pymongo.errors import ServerSelectionTimeoutError
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -19,30 +17,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- MongoDB Connection Setup ---
-MONGO_URI = os.environ.get('MONGO_URI')
-
-mongo_client = None
-wingo_collection = None
-
-if MONGO_URI:
-    for attempt in range(1, 4):
-        try:
-            mongo_client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-            mongo_client.admin.command('ping')
-            db = mongo_client['Restless_Gambler']
-            wingo_collection = db['Wingo_Dataset']
-            logging.info("✅ Connected to MongoDB successfully.")
-            break
-        except ServerSelectionTimeoutError:
-            logging.error(f"❌ ERROR: Failed to connect to MongoDB. Attempt {attempt}")
-            if attempt == 3:
-                wingo_collection = None
-            time.sleep(2)
-else:
-    logging.critical("❌ ERROR: MONGO_URI not found in .env file.")
-
 
 COLOR_MAP = {
     '0': 'red/violet', '1': 'green', '2': 'red', '3': 'green', '4': 'red',
@@ -110,6 +84,25 @@ def perform_login(driver, wait, phone_number, password, max_retries=3):
     return False
 
 
+def write_records_to_txt(records):
+    output_dir = os.path.join(os.path.dirname(__file__), "output")
+    os.makedirs(output_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_file = os.path.join(output_dir, f"wingo_data_{timestamp}.txt")
+
+    logging.info(f"Writing {len(records)} records to TXT file...")
+
+    with open(output_file, "w", encoding="utf-8") as file:
+        file.write("period,number,color,scraped_at\n")
+        for record in records:
+            file.write(
+                f"{record['period']},{record['number']},{record['color']},{record['scraped_at']}\n"
+            )
+
+    logging.info(f"✅ Task Finished. Saved {len(records)} records to {output_file}")
+
+
 def close_popups(wait):
     popup_xpaths = [
         "/html/body/div[1]/div[2]/div[11]/div[1]/div[3]",
@@ -161,11 +154,10 @@ def wait_for_clock_and_read_rows(driver, wait, total_pages=15):
                 period = driver.find_element(By.XPATH, period_xpath).text
                 number = driver.find_element(By.XPATH, number_xpath).text
                 all_records.append({
-                    '_id': period,
                     'period': period,
                     'number': number,
                     'color': COLOR_MAP.get(number, 'unknown'),
-                    'scraped_at': datetime.now(UTC_PLUS_6)
+                    'scraped_at': datetime.now(UTC_PLUS_6).isoformat()
                 })
             except Exception:
                 continue
@@ -179,23 +171,12 @@ def wait_for_clock_and_read_rows(driver, wait, total_pages=15):
     return all_records
 
 
-def upsert_records_to_mongo(records):
-    logging.info(f"Uploading {len(records)} records to MongoDB...")
-    count = 0
-    for record in records:
-        result = wingo_collection.update_one({'_id': record['_id']}, {'$set': record}, upsert=True)
-        if result.upserted_id:
-            count += 1
-
-    logging.info(f"✅ Task Finished. Added {count} new records.")
-
-
 def run_scraper_task():
     phone_number = os.environ.get('PHONE_NUMBER')
     password = os.environ.get('PASSWORD')
 
-    if not phone_number or not password or wingo_collection is None:
-        logging.critical("ERROR: Missing credentials or MongoDB connection.")
+    if not phone_number or not password:
+        logging.critical("ERROR: Missing PHONE_NUMBER or PASSWORD in .env file.")
         return
 
     chrome_options = Options()
@@ -228,22 +209,22 @@ def run_scraper_task():
         go_to_wingo_page(wait)
         all_records = wait_for_clock_and_read_rows(driver, wait, total_pages=15)
 
-        logging.info("Validating period sequence...")
         valid_records = get_valid_period_prefix(all_records)
+        logging.info("Validating period sequence...")
         if not valid_records:
-            logging.error("Validation failed at the start. Mongo upload was skipped.")
+            logging.error("Validation failed at the start. TXT file was not created.")
             return
 
         if len(valid_records) < len(all_records):
             logging.warning(
-                "Validation failed mid-sequence. Uploading only valid prefix: %s/%s records.",
+                "Validation failed mid-sequence. Writing only valid prefix: %s/%s records.",
                 len(valid_records),
                 len(all_records),
             )
         else:
             logging.info("Validation passed for all collected records.")
 
-        upsert_records_to_mongo(valid_records)
+        write_records_to_txt(valid_records)
     except Exception as e:
         logging.error(f"❌ Scraper Task Failed: {e}")
     finally:
@@ -252,5 +233,4 @@ def run_scraper_task():
 
 
 if __name__ == "__main__":
-    if wingo_collection is not None:
-        run_scraper_task()
+    run_scraper_task()
