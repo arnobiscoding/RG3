@@ -1,7 +1,8 @@
 #!/bin/sh
-# Block commits that contain common secret/token patterns.
+# Block commits that contain likely real secret/token patterns.
+# This intentionally allows placeholder keys in .env.example (e.g. TELEGRAM_BOT_TOKEN=your_...).
 
-PATTERN='([0-9]{8,12}:[A-Za-z0-9_-]{20,}|TELEGRAM_BOT_TOKEN\s*=\s*[^[:space:]]+|BOT_TOKEN\s*=\s*[^[:space:]]+|api\.telegram\.org/bot)'
+PATTERN='([0-9]{8,12}:[A-Za-z0-9_-]{20,}|api\.telegram\.org/bot[0-9]{8,12}:[A-Za-z0-9_-]{20,})'
 
 # Scan only staged added/modified files.
 FILES=$(git diff --cached --name-only --diff-filter=AM)
