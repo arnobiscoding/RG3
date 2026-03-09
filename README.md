@@ -1,4 +1,4 @@
-# RG3 - Wingo Data Lab
+# RG3 - Restless Gambler 3
 
 A fun learning project to collect Wingo draw data, analyze patterns with statistics, and experiment with ML models for number prediction research.
 
