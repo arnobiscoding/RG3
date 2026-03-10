@@ -115,6 +115,35 @@ def get_valid_period_prefix(records):
     return records
 
 
+def drop_duplicate_periods(records):
+    if not records:
+        return records
+
+    deduped_records = []
+    seen_periods = set()
+    duplicate_count = 0
+
+    for record in records:
+        period = record.get('period')
+        if not period:
+            continue
+
+        if period in seen_periods:
+            duplicate_count += 1
+            continue
+
+        seen_periods.add(period)
+        deduped_records.append(record)
+
+    if duplicate_count:
+        logging.warning(
+            "Dropped %s duplicate period rows before validation.",
+            duplicate_count,
+        )
+
+    return deduped_records
+
+
 def perform_login(driver, wait, phone_number, password, max_retries=3):
     retries = 0
     driver.get("https://hgnice.bet/#/login")
@@ -181,10 +210,16 @@ def wait_for_clock_and_read_rows(driver, wait, total_pages=15):
 
     all_records = []
     parent_xpath = '/html/body/div[1]/div[2]/div[4]/div[2]/div/div[2]'
+    previous_page_first_period = None
 
-    for current_page in range(1, total_pages + 1):
-        logging.info(f"Reading page {current_page}/{total_pages}...")
-        time.sleep(1)
+    def get_first_visible_period():
+        first_period_nodes = driver.find_elements(By.XPATH, f'{parent_xpath}/div[1]/div[1]')
+        if not first_period_nodes:
+            return ""
+        return first_period_nodes[0].text.strip()
+
+    def read_current_page_records():
+        records = []
         wait.until(EC.presence_of_element_located((By.XPATH, parent_xpath)))
         row_count = len(driver.find_elements(By.XPATH, f'{parent_xpath}/div'))
 
@@ -194,7 +229,7 @@ def wait_for_clock_and_read_rows(driver, wait, total_pages=15):
                 number_xpath = f'{parent_xpath}/div[{row_index}]/div[2]/div'
                 period = driver.find_element(By.XPATH, period_xpath).text
                 number = driver.find_element(By.XPATH, number_xpath).text
-                all_records.append({
+                records.append({
                     '_id': period,
                     'period': period,
                     'number': number,
@@ -204,9 +239,66 @@ def wait_for_clock_and_read_rows(driver, wait, total_pages=15):
             except Exception:
                 continue
 
+        return records
+
+    for current_page in range(1, total_pages + 1):
+        logging.info(f"Reading page {current_page}/{total_pages}...")
+        time.sleep(1)
+
+        page_records = []
+        for attempt in range(1, 4):
+            candidate_records = read_current_page_records()
+            if not candidate_records:
+                logging.warning(
+                    "No rows found on page %s (attempt %s/3). Retrying...",
+                    current_page,
+                    attempt,
+                )
+                time.sleep(0.6)
+                continue
+
+            current_first_period = candidate_records[0]['period']
+            if previous_page_first_period and current_first_period == previous_page_first_period:
+                logging.warning(
+                    "Page %s appears unchanged after navigation (attempt %s/3). Retrying read...",
+                    current_page,
+                    attempt,
+                )
+                time.sleep(0.8)
+                continue
+
+            page_records = candidate_records
+            break
+
+        if not page_records:
+            page_records = read_current_page_records()
+            if page_records and previous_page_first_period and page_records[0]['period'] == previous_page_first_period:
+                logging.warning(
+                    "Page %s still appears unchanged after retries; continuing with captured rows.",
+                    current_page,
+                )
+
+        all_records.extend(page_records)
+        if page_records:
+            previous_page_first_period = page_records[0]['period']
+
         if current_page < total_pages:
             next_btn = driver.find_element(By.XPATH, '//div[contains(@class, "record-foot-next")]')
             next_btn.click()
+            if previous_page_first_period:
+                try:
+                    WebDriverWait(driver, 6).until(
+                        lambda _driver: (
+                            (new_first := get_first_visible_period())
+                            and new_first != previous_page_first_period
+                        )
+                    )
+                except Exception:
+                    logging.warning(
+                        "Timed out waiting for page %s -> %s transition; continuing with retry logic.",
+                        current_page,
+                        current_page + 1,
+                    )
 
     logging.info(f"Finished reading pages. Collected {len(all_records)} total rows.")
 
@@ -261,6 +353,8 @@ def run_scraper_task():
         close_popups(wait)
         go_to_wingo_page(wait)
         all_records = wait_for_clock_and_read_rows(driver, wait, total_pages=15)
+
+        all_records = drop_duplicate_periods(all_records)
 
         logging.info("Validating period sequence...")
         valid_records = get_valid_period_prefix(all_records)

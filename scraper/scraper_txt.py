@@ -89,6 +89,35 @@ def get_valid_period_prefix(records):
     return records
 
 
+def drop_duplicate_periods(records):
+    if not records:
+        return records
+
+    deduped_records = []
+    seen_periods = set()
+    duplicate_count = 0
+
+    for record in records:
+        period = record.get('period')
+        if not period:
+            continue
+
+        if period in seen_periods:
+            duplicate_count += 1
+            continue
+
+        seen_periods.add(period)
+        deduped_records.append(record)
+
+    if duplicate_count:
+        logging.warning(
+            "Dropped %s duplicate period rows before validation.",
+            duplicate_count,
+        )
+
+    return deduped_records
+
+
 def perform_login(driver, wait, phone_number, password, max_retries=3):
     retries = 0
     driver.get("https://hgnice.bet/#/login")
@@ -242,6 +271,8 @@ def run_scraper_task():
         close_popups(wait)
         go_to_wingo_page(wait)
         all_records = wait_for_clock_and_read_rows(driver, wait, total_pages=15)
+
+        all_records = drop_duplicate_periods(all_records)
 
         valid_records = get_valid_period_prefix(all_records)
         logging.info("Validating period sequence...")
